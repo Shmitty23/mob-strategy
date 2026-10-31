@@ -56,6 +56,7 @@ final class WikiParser
 	private static final Pattern TAB_NAME = Pattern.compile("^(?:\\|-\\|)?\\s*([^=|{}\\[\\]<>]{1,40})=\\s*$");
 	private static final Pattern INVENTORY_AMOUNT = Pattern.compile("\\\\(\\d+)");
 	private static final Pattern PLAIN_LINK = Pattern.compile("\\[\\[([^|\\]#]+)");
+	private static final Pattern FILE_NAME = Pattern.compile("(?:File|Image):([^|\\]\\n]+)", Pattern.CASE_INSENSITIVE);
 	private static final Pattern FIRST_NUMBER = Pattern.compile("^\\s*(\\d+)");
 	private static final Pattern TAB_LABEL = Pattern.compile("^(\\|-\\|)?\\s*[^=]{0,40}=\\s*$");
 	private static final Pattern COMMENT = Pattern.compile("<!--.*?-->", Pattern.DOTALL);
@@ -325,6 +326,62 @@ final class WikiParser
 	 * Reads the game item ID from an item's wiki page ({{Infobox Item|id=12006}}).
 	 * Returns null if the page isn't an item (a prayer or spell, for example).
 	 */
+	/**
+	 * The picture file named in a monster's info box ({{Infobox Monster|image=[[File:Vorkath.png|280px]]}}),
+	 * e.g. "Vorkath.png". Returns null if there isn't one.
+	 */
+	static String findMonsterImage(String wikitext)
+	{
+		String text = COMMENT.matcher(wikitext).replaceAll("");
+		String image = findMonsterImageIn(text, false);
+		// Group pages like Barrows have a location/minigame box instead; use its picture
+		return image != null ? image : findMonsterImageIn(text, true);
+	}
+
+	private static String findMonsterImageIn(String text, boolean anyInfobox)
+	{
+		for (int[] span : findTemplates(text))
+		{
+			Template t = Template.parse(text.substring(span[0], span[1]));
+			if (t.name.equals("infobox monster") || (anyInfobox && t.name.startsWith("infobox")))
+			{
+				// "image", or "image1", "image2"... for monsters with several versions.
+				// Prefer .png: Java can't open newer .webp pictures.
+				String fallback = null;
+				for (Map.Entry<String, String> param : t.named.entrySet())
+				{
+					if (param.getKey().matches("image\\d*"))
+					{
+						Matcher m = FILE_NAME.matcher(param.getValue());
+						if (m.find())
+						{
+							String file = m.group(1).trim();
+							if (!file.toLowerCase(Locale.ROOT).endsWith(".webp"))
+							{
+								return file;
+							}
+							fallback = fallback == null ? file : fallback;
+						}
+					}
+				}
+				if (fallback != null)
+				{
+					return fallback;
+				}
+				continue;
+			}
+			for (String value : t.allValues())
+			{
+				String image = findMonsterImageIn(value, anyInfobox);
+				if (image != null)
+				{
+					return image;
+				}
+			}
+		}
+		return null;
+	}
+
 	static Integer findItemId(String wikitext)
 	{
 		return findItemIdIn(COMMENT.matcher(wikitext).replaceAll(""));

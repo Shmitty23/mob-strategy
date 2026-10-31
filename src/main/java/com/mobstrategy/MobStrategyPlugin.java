@@ -8,13 +8,17 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
+import net.runelite.client.plugins.PluginDependency;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.slayer.SlayerPlugin;
+import net.runelite.client.plugins.slayer.SlayerPluginService;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ImageUtil;
 import okhttp3.OkHttpClient;
 
 @Slf4j
+@PluginDependency(SlayerPlugin.class) // so we can ask it for your current Slayer task
 @PluginDescriptor(
 	name = "Mob Strategy",
 	description = "Shows recommended gear and strategies for monsters from the OSRS Wiki",
@@ -37,6 +41,9 @@ public class MobStrategyPlugin extends Plugin
 	@Inject
 	private ItemManager itemManager;
 
+	@Inject
+	private SlayerPluginService slayerService;
+
 	private MobStrategyPanel panel;
 	private NavigationButton navButton;
 
@@ -46,7 +53,7 @@ public class MobStrategyPlugin extends Plugin
 		// Load the built-in guides, then build the side panel
 		GuideStore guideStore = new GuideStore(okHttpClient, gson);
 		guideStore.loadBuiltIn();
-		panel = new MobStrategyPanel(guideStore, config, itemManager);
+		panel = new MobStrategyPanel(guideStore, config, itemManager, slayerService::getTask);
 
 		final BufferedImage icon = ImageUtil.loadImageResource(getClass(), "icon.png");
 

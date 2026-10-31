@@ -15,6 +15,9 @@ class MonsterGuide
 	/** Wiki page it came from, e.g. "Vorkath/Strategies". */
 	String page;
 
+	/** File name of the monster's small picture inside the plugin (monsters/vorkath.png), or null. */
+	String image;
+
 	/** One entry per gear table on the page (Melee, Ranged, Magic...). */
 	List<GearSetup> setups = new ArrayList<>();
 

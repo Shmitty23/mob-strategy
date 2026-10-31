@@ -4,6 +4,10 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -13,13 +17,16 @@ import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import javax.imageio.ImageIO;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -63,8 +70,40 @@ public class GuideGenerator
 		"Metal dragons",
 		"Grotesque Guardians",
 		"Revenants",
-		"Fossil Island Wyverns"
+		"Fossil Island Wyverns",
+		"Barrows"
 	);
+
+	/** Specific pages to leave out (duplicates or ones we don't want). */
+	private static final Set<String> EXCLUDE_PAGES = new HashSet<>(Arrays.asList(
+		"Hespori (Echo)/Strategies",
+		"Slayer task/Fossil Island wyverns"
+	));
+
+	/**
+	 * Where to take a monster's picture from, when its own page shows an area or a group.
+	 * Guide name (lowercase) -> wiki page with the picture we want.
+	 */
+	private static final Map<String, String> PICTURE_FROM = new HashMap<>();
+
+	static
+	{
+		PICTURE_FROM.put("barrows", "Ahrim the Blighted");
+		PICTURE_FROM.put("fossil island wyverns", "Spitting wyvern");
+		PICTURE_FROM.put("metal dragons", "Bronze dragon");
+		PICTURE_FROM.put("revenants", "Revenant knight");
+		PICTURE_FROM.put("trolls", "Mountain troll");
+		PICTURE_FROM.put("dagannoth kings", "Dagannoth Rex");
+		PICTURE_FROM.put("custodian stalker", "Mature custodian stalker");
+	}
+
+	/** Exact picture files to use. Guide name (lowercase) -> file name on the wiki. */
+	private static final Map<String, String> PICTURE_FILE = new HashMap<>();
+
+	static
+	{
+		PICTURE_FILE.put("mad angel", "Mad Angel (dormant).png");
+	}
 
 	private final OkHttpClient http = new OkHttpClient();
 	private final Gson gson = new Gson();
@@ -125,7 +164,10 @@ public class GuideGenerator
 		// 4. item IDs for icons
 		data.itemIds = lookUpItemIds(data.guides, data.groupItems);
 
-		// 5. save
+		// 5. a small picture of each monster
+		downloadMonsterPictures(data.guides, output.toAbsolutePath().getParent().resolve("monsters"));
+
+		// 6. save
 		Files.createDirectories(output.toAbsolutePath().getParent());
 		Gson writer = new GsonBuilder().disableHtmlEscaping().create();
 		try (Writer w = Files.newBufferedWriter(output, StandardCharsets.UTF_8))
@@ -134,7 +176,8 @@ public class GuideGenerator
 		}
 		long withGear = data.guides.stream().filter(g -> !g.setups.isEmpty()).count();
 		long withInventory = data.guides.stream().filter(g -> !g.inventories.isEmpty()).count();
-		System.out.println("Saved " + data.guides.size() + " guides (" + withGear + " with gear, "
+		long withPicture = data.guides.stream().filter(g -> g.image != null).count();
+		System.out.println("Saved " + data.guides.size() + " guides (" + withGear + " with gear, " + withPicture + " with pictures, "
 			+ withInventory + " with inventories, " + data.itemIds.size() + " item icons) to "
 			+ output.toAbsolutePath() + " (" + Files.size(output) / 1024 + " KB)");
 	}
@@ -210,9 +253,10 @@ public class GuideGenerator
 		for (String title : titles)
 		{
 			String main = mainPage(title).toLowerCase(Locale.ROOT);
-			boolean keep = title.startsWith("Slayer task/")
+			boolean keep = !EXCLUDE_PAGES.contains(title)
+				&& (title.startsWith("Slayer task/")
 				|| ALWAYS_INCLUDE.contains(main)
-				|| (monsters.contains(mainPage(title)) && !ALWAYS_EXCLUDE.contains(main));
+				|| (monsters.contains(mainPage(title)) && !ALWAYS_EXCLUDE.contains(main)));
 			(keep ? kept : dropped).add(title);
 		}
 		System.out.println("Left out " + dropped.size() + " pages (raids, minigames, skilling):");
@@ -399,6 +443,215 @@ public class GuideGenerator
 			}
 		}
 		return words;
+	}
+
+	/** Size of the monster pictures, in pixels (they're drawn inside a square this big). */
+	private static final int PICTURE_SIZE = 28;
+
+	/**
+	 * Downloads the picture from each monster's wiki info box, shrinks it to a small icon
+	 * and saves it in the plugin's resources (monsters/vorkath.png).
+	 */
+	private void downloadMonsterPictures(List<MonsterGuide> guides, Path folder) throws Exception
+	{
+		// Which wiki page shows the monster itself: "Vorkath/Strategies" -> "Vorkath",
+		// "Slayer task/Bloodveld" -> "Bloodveld"
+		Map<MonsterGuide, String> monsterPage = new LinkedHashMap<>();
+		for (MonsterGuide guide : guides)
+		{
+			String page = guide.page.startsWith("Slayer task/")
+				? guide.page.substring("Slayer task/".length())
+				: mainPage(guide.page);
+			monsterPage.put(guide, PICTURE_FROM.getOrDefault(guide.name.toLowerCase(Locale.ROOT), page));
+		}
+
+		// 1. find the picture's file name on each monster page
+		Map<String, String> fileOf = new HashMap<>();
+		for (List<String> batch : batches(new ArrayList<>(new TreeSet<>(monsterPage.values()))))
+		{
+			Map<String, String> texts = WikiApi.readPageTexts(get(WikiApi.pageTextRequest(batch)), batch);
+			for (String page : batch)
+			{
+				String file = texts.containsKey(page) ? WikiParser.findMonsterImage(texts.get(page)) : null;
+				if (file != null)
+				{
+					fileOf.put(page, file);
+				}
+			}
+			pause();
+		}
+
+		// Pictures we picked by hand
+		for (MonsterGuide guide : guides)
+		{
+			String file = PICTURE_FILE.get(guide.name.toLowerCase(Locale.ROOT));
+			if (file != null)
+			{
+				fileOf.put(monsterPage.get(guide), file);
+			}
+		}
+
+		// 2. ask the wiki for a small (64px wide) copy of each picture
+		Map<String, String> smallCopyUrl = new HashMap<>();
+		List<String> fileTitles = new ArrayList<>();
+		for (String file : new TreeSet<>(fileOf.values()))
+		{
+			fileTitles.add("File:" + file);
+		}
+		for (List<String> batch : batches(fileTitles))
+		{
+			HttpUrl url = HttpUrl.parse(WikiApi.API_URL).newBuilder()
+				.addQueryParameter("action", "query")
+				.addQueryParameter("prop", "imageinfo")
+				.addQueryParameter("iiprop", "url")
+				.addQueryParameter("iiurlwidth", "64")
+				.addQueryParameter("format", "json")
+				.addQueryParameter("formatversion", "2")
+				.addQueryParameter("titles", String.join("|", batch))
+				.build();
+			JsonObject query = get(WikiApi.request(url)).getAsJsonObject("query");
+			Map<String, String> found = new HashMap<>();
+			for (JsonElement p : query.getAsJsonArray("pages"))
+			{
+				JsonObject page = p.getAsJsonObject();
+				if (!page.has("imageinfo"))
+				{
+					continue;
+				}
+				JsonObject info = page.getAsJsonArray("imageinfo").get(0).getAsJsonObject();
+				String link = info.has("thumburl") ? info.get("thumburl").getAsString() : info.get("url").getAsString();
+				found.put(page.get("title").getAsString(), link);
+			}
+			Map<String, String> normalized = WikiApi.readFromTo(query, "normalized");
+			for (String title : batch)
+			{
+				String link = found.get(normalized.getOrDefault(title, title));
+				if (link != null)
+				{
+					smallCopyUrl.put(title.substring("File:".length()), link);
+				}
+			}
+			pause();
+		}
+
+		// 3. pages with no info box picture: use the main picture the wiki shows for the page
+		List<String> noPicture = new ArrayList<>();
+		for (String page : new TreeSet<>(monsterPage.values()))
+		{
+			if (!fileOf.containsKey(page))
+			{
+				noPicture.add(page);
+			}
+		}
+		Map<String, String> pagePictureUrl = new HashMap<>();
+		for (List<String> batch : batches(noPicture))
+		{
+			HttpUrl url = HttpUrl.parse(WikiApi.API_URL).newBuilder()
+				.addQueryParameter("action", "query")
+				.addQueryParameter("prop", "pageimages")
+				.addQueryParameter("piprop", "thumbnail")
+				.addQueryParameter("pithumbsize", "64")
+				.addQueryParameter("pilimit", "max")
+				.addQueryParameter("redirects", "1")
+				.addQueryParameter("format", "json")
+				.addQueryParameter("formatversion", "2")
+				.addQueryParameter("titles", String.join("|", batch))
+				.build();
+			JsonObject query = get(WikiApi.request(url)).getAsJsonObject("query");
+			Map<String, String> found = new HashMap<>();
+			for (JsonElement p : query.getAsJsonArray("pages"))
+			{
+				JsonObject page = p.getAsJsonObject();
+				if (page.has("thumbnail"))
+				{
+					found.put(page.get("title").getAsString(), page.getAsJsonObject("thumbnail").get("source").getAsString());
+				}
+			}
+			Map<String, String> normalized = WikiApi.readFromTo(query, "normalized");
+			Map<String, String> redirects = WikiApi.readFromTo(query, "redirects");
+			for (String page : batch)
+			{
+				String resolved = normalized.getOrDefault(page, page);
+				resolved = redirects.getOrDefault(resolved, resolved);
+				if (found.containsKey(resolved))
+				{
+					pagePictureUrl.put(page, found.get(resolved));
+				}
+			}
+			pause();
+		}
+
+		// 4. download, shrink and save. Old pictures are removed first so none go stale.
+		Files.createDirectories(folder);
+		try (java.util.stream.Stream<Path> old = Files.list(folder))
+		{
+			for (Path file : (Iterable<Path>) old::iterator)
+			{
+				if (file.toString().endsWith(".png"))
+				{
+					Files.delete(file);
+				}
+			}
+		}
+		System.out.println("Downloading monster pictures...");
+		Map<String, String> savedAs = new HashMap<>();
+		List<String> withoutPicture = new ArrayList<>();
+		for (MonsterGuide guide : guides)
+		{
+			String page = monsterPage.get(guide);
+			String file = fileOf.get(page);
+			String link = file != null ? smallCopyUrl.get(file) : pagePictureUrl.get(page);
+			if (link == null)
+			{
+				withoutPicture.add(guide.name);
+				continue;
+			}
+			if (!savedAs.containsKey(link))
+			{
+				BufferedImage picture = download(link);
+				if (picture == null)
+				{
+					withoutPicture.add(guide.name);
+					continue;
+				}
+				String name = guide.name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-") + ".png";
+				ImageIO.write(shrink(picture), "png", folder.resolve(name).toFile());
+				savedAs.put(link, name);
+				Thread.sleep(200);
+			}
+			guide.image = savedAs.get(link);
+		}
+		System.out.println("No picture for " + withoutPicture.size() + " monsters: " + withoutPicture);
+	}
+
+	private BufferedImage download(String link) throws IOException
+	{
+		Request request = new Request.Builder().url(link).header("User-Agent", WikiApi.USER_AGENT).build();
+		try (Response response = http.newCall(request).execute())
+		{
+			if (!response.isSuccessful() || response.body() == null)
+			{
+				System.out.println("  couldn't download " + link);
+				return null;
+			}
+			return ImageIO.read(new ByteArrayInputStream(response.body().bytes()));
+		}
+	}
+
+	/** Shrinks a picture to fit a PICTURE_SIZE square, keeping its shape, centered. */
+	private static BufferedImage shrink(BufferedImage picture)
+	{
+		double scale = Math.min((double) PICTURE_SIZE / picture.getWidth(), (double) PICTURE_SIZE / picture.getHeight());
+		int width = Math.max(1, (int) Math.round(picture.getWidth() * scale));
+		int height = Math.max(1, (int) Math.round(picture.getHeight() * scale));
+		BufferedImage small = new BufferedImage(PICTURE_SIZE, PICTURE_SIZE, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D g = small.createGraphics();
+		g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+		g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+		g.drawImage(picture, (PICTURE_SIZE - width) / 2, (PICTURE_SIZE - height) / 2, width, height, null);
+		g.dispose();
+		return small;
 	}
 
 	/** Every main-namespace page linked from a page, including links inside its navigation boxes. */

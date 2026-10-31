@@ -2,6 +2,7 @@ package com.mobstrategy;
 
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.event.KeyAdapter;
@@ -10,10 +11,13 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
+import javax.swing.JButton;
 import javax.swing.DefaultComboBoxModel;
+import javax.swing.DefaultListCellRenderer;
 import javax.swing.DefaultListModel;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
@@ -40,7 +44,7 @@ import net.runelite.client.util.LinkBrowser;
 class MobStrategyPanel extends PluginPanel
 {
 	private static final String WIKI_URL = "https://oldschool.runescape.wiki/";
-	private static final int RESULT_ROW_HEIGHT = 20;
+	private static final int RESULT_ROW_HEIGHT = 30; // tall enough for the monster pictures
 	private static final int MAX_VISIBLE_RESULTS = 8;
 	// Swing draws HTML text about 1.33x wider than this number, so 130 really fills ~173px
 	private static final int TEXT_WIDTH = 130;
@@ -73,13 +77,18 @@ class MobStrategyPanel extends PluginPanel
 	private MonsterGuide currentGuide;
 	private String currentName;
 
-	MobStrategyPanel(GuideStore store, MobStrategyConfig config, ItemManager itemManager)
+	/** Asks RuneLite's Slayer plugin for the current task name, or null if there isn't one. */
+	private final Supplier<String> slayerTask;
+	private final JButton slayerButton = new JButton("Open my Slayer task");
+
+	MobStrategyPanel(GuideStore store, MobStrategyConfig config, ItemManager itemManager, Supplier<String> slayerTask)
 	{
 		super();
 		this.store = store;
 		this.config = config;
 		this.monsters = store.names();
 		this.gearView = new GearView(store, itemManager);
+		this.slayerTask = slayerTask;
 
 		setLayout(new BorderLayout(0, 10));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
@@ -167,6 +176,7 @@ class MobStrategyPanel extends PluginPanel
 		resultsList.setSelectionBackground(ColorScheme.BRAND_ORANGE);
 		resultsList.setSelectionForeground(Color.WHITE);
 		resultsList.setFocusable(false); // keep typing focus in the search box
+		resultsList.setCellRenderer(new MonsterRenderer());
 		resultsList.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 		resultsList.addMouseListener(new MouseAdapter()
 		{
@@ -196,7 +206,8 @@ class MobStrategyPanel extends PluginPanel
 		monsterDropdown.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
 		monsterDropdown.setAlignmentX(LEFT_ALIGNMENT);
 		monsterDropdown.setFocusable(false);
-		monsterDropdown.setMaximumRowCount(15);
+		monsterDropdown.setMaximumRowCount(12);
+		monsterDropdown.setRenderer(new MonsterRenderer());
 		monsterDropdown.addActionListener(e ->
 		{
 			String picked = (String) monsterDropdown.getSelectedItem();
@@ -215,6 +226,16 @@ class MobStrategyPanel extends PluginPanel
 		area.add(noMatchesLabel);
 		area.add(Box.createVerticalStrut(8));
 		area.add(monsterDropdown);
+
+		// Opens the guide for whatever Slayer task you have right now
+		slayerButton.setFont(FontManager.getRunescapeSmallFont());
+		slayerButton.setFocusable(false);
+		slayerButton.setAlignmentX(LEFT_ALIGNMENT);
+		slayerButton.setMaximumSize(new Dimension(Integer.MAX_VALUE, 25));
+		slayerButton.setPreferredSize(new Dimension(150, 25));
+		slayerButton.addActionListener(e -> openSlayerTask());
+		area.add(Box.createVerticalStrut(6));
+		area.add(slayerButton);
 		return area;
 	}
 
@@ -369,6 +390,7 @@ class MobStrategyPanel extends PluginPanel
 		currentGuide = null;
 		currentName = null;
 		titleLabel.setText("Pick a monster");
+		titleLabel.setIcon(null);
 		if (monsters.isEmpty())
 		{
 			statusLabel.setText(html("No guide info found. Run GuideGenerator to build guides.json.", GRAY));
@@ -429,6 +451,7 @@ class MobStrategyPanel extends PluginPanel
 		currentGuide = guide;
 		// wrapped, so long names like "Fossil Island wyverns (Slayer task)" can't stretch the panel
 		titleLabel.setText(wrapHtml(escape(guide.name)));
+		titleLabel.setIcon(store.picture(guide.name));
 		wikiLink.setVisible(true);
 		tabArea.setVisible(true);
 
@@ -446,6 +469,39 @@ class MobStrategyPanel extends PluginPanel
 			: sectionsHtml(guide.tactics));
 
 		refreshLayout();
+	}
+
+	/** The "Open my Slayer task" button: find the guide for the current task and open it. */
+	private void openSlayerTask()
+	{
+		String task = slayerTask.get();
+		if (task == null || task.trim().isEmpty())
+		{
+			showNothingSelected();
+			setStatus("No Slayer task found. Log in with a task, and make sure RuneLite's Slayer plugin is turned on.");
+			return;
+		}
+		String guide = store.findGuideFor(task);
+		if (guide == null)
+		{
+			showNothingSelected();
+			setStatus("Your task is " + task + ", but there's no strategy guide for it on the wiki.");
+			return;
+		}
+		pick(guide);
+	}
+
+	/** Draws a monster's picture next to its name in the search results and dropdown. */
+	private class MonsterRenderer extends DefaultListCellRenderer
+	{
+		@Override
+		public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean selected, boolean focused)
+		{
+			super.getListCellRendererComponent(list, value, index, selected, focused);
+			setIcon(value == null ? null : store.picture(value.toString()));
+			setIconTextGap(6);
+			return this;
+		}
 	}
 
 	private void setStatus(String text)
