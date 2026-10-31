@@ -8,12 +8,13 @@ import net.runelite.client.config.ConfigItem;
 public interface MobStrategyConfig extends Config
 {
 	@ConfigItem(
-		keyName = "greeting",
-		name = "Welcome Greeting",
-		description = "The message to show to the user when they login"
+		keyName = "liveWikiLookups",
+		name = "Live wiki lookups",
+		description = "Get the latest gear and strategy info straight from the OSRS Wiki, instead of only the info built into the plugin",
+		warning = "This feature submits your IP address to a 3rd-party server not controlled or verified by RuneLite developers"
 	)
-	default String greeting()
+	default boolean liveWikiLookups()
 	{
-		return "Hello";
+		return false;
 	}
 }
