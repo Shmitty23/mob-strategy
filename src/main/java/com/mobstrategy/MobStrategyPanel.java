@@ -9,7 +9,6 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -22,50 +21,66 @@ import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.ListSelectionModel;
+import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import net.runelite.client.game.ItemManager;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
 import net.runelite.client.ui.PluginPanel;
 import net.runelite.client.ui.components.IconTextField;
+import net.runelite.client.ui.components.materialtabs.MaterialTab;
+import net.runelite.client.ui.components.materialtabs.MaterialTabGroup;
 import net.runelite.client.util.LinkBrowser;
 
 /**
  * The side panel: a search box with live results, a dropdown of every monster,
- * and an area that will show gear and tactics for the chosen monster.
+ * and Gear / Tactics tabs for the chosen monster.
  */
 class MobStrategyPanel extends PluginPanel
 {
 	private static final String WIKI_URL = "https://oldschool.runescape.wiki/";
 	private static final int RESULT_ROW_HEIGHT = 20;
 	private static final int MAX_VISIBLE_RESULTS = 8;
+	// Swing draws HTML text about 1.33x wider than this number, so 130 really fills ~173px
+	private static final int TEXT_WIDTH = 130;
 
-	// Placeholder list for now. In the next step this comes from the wiki data.
-	private static final List<String> MONSTERS = Arrays.asList(
-		"Abyssal demon",
-		"Bloodveld",
-		"Cerberus",
-		"Dust devil",
-		"Gargoyle",
-		"General Graardor",
-		"Kraken",
-		"Nechryael",
-		"Vorkath",
-		"Zulrah"
-	);
+	private static final String ORANGE = toHex(ColorScheme.BRAND_ORANGE);
+	private static final String WHITE = toHex(Color.WHITE);
+	private static final String GRAY = toHex(ColorScheme.LIGHT_GRAY_COLOR);
 
+	private final GuideStore store;
+	private final MobStrategyConfig config;
+	private final List<String> monsters;
+
+	// search
 	private final IconTextField searchBar = new IconTextField();
 	private final DefaultListModel<String> resultsModel = new DefaultListModel<>();
 	private final JList<String> resultsList = new JList<>(resultsModel);
 	private final JScrollPane resultsScroll = new JScrollPane(resultsList);
 	private final JLabel noMatchesLabel = new JLabel("No monsters found");
 	private final JComboBox<String> monsterDropdown = new JComboBox<>();
-	private final JLabel titleLabel = new JLabel();
-	private final JLabel infoLabel = new JLabel();
 
-	MobStrategyPanel()
+	// guide display
+	private final JLabel titleLabel = new JLabel();
+	private final JLabel statusLabel = new JLabel();
+	private final JLabel wikiLink = new JLabel();
+	private final JPanel tabArea = new JPanel(new BorderLayout(0, 6));
+	private final GearView gearView;
+	private final JLabel notesLabel = new JLabel();
+	private final JLabel tacticsLabel = new JLabel();
+
+	private MonsterGuide currentGuide;
+	private String currentName;
+
+	MobStrategyPanel(GuideStore store, MobStrategyConfig config, ItemManager itemManager)
 	{
 		super();
+		this.store = store;
+		this.config = config;
+		this.monsters = store.names();
+		this.gearView = new GearView(store, itemManager);
+
 		setLayout(new BorderLayout(0, 10));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
 
@@ -75,6 +90,8 @@ class MobStrategyPanel extends PluginPanel
 
 		showNothingSelected();
 	}
+
+	// ---------------------------------------------------------------- search area
 
 	private JPanel buildSearchArea()
 	{
@@ -173,11 +190,13 @@ class MobStrategyPanel extends PluginPanel
 		noMatchesLabel.setVisible(false);
 
 		// Dropdown: always lists every monster, for browsing
-		monsterDropdown.setModel(new DefaultComboBoxModel<>(MONSTERS.toArray(new String[0])));
+		monsterDropdown.setModel(new DefaultComboBoxModel<>(monsters.toArray(new String[0])));
 		monsterDropdown.setSelectedIndex(-1);
+		monsterDropdown.setPreferredSize(new Dimension(150, 30));
 		monsterDropdown.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
 		monsterDropdown.setAlignmentX(LEFT_ALIGNMENT);
 		monsterDropdown.setFocusable(false);
+		monsterDropdown.setMaximumRowCount(15);
 		monsterDropdown.addActionListener(e ->
 		{
 			String picked = (String) monsterDropdown.getSelectedItem();
@@ -187,7 +206,7 @@ class MobStrategyPanel extends PluginPanel
 			}
 			else
 			{
-				showMonster(picked);
+				openGuide(picked);
 			}
 		});
 
@@ -197,43 +216,6 @@ class MobStrategyPanel extends PluginPanel
 		area.add(Box.createVerticalStrut(8));
 		area.add(monsterDropdown);
 		return area;
-	}
-
-	private JPanel buildInfoArea()
-	{
-		JPanel area = new JPanel();
-		area.setLayout(new BoxLayout(area, BoxLayout.Y_AXIS));
-		area.setBackground(ColorScheme.DARKER_GRAY_COLOR);
-		area.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-
-		titleLabel.setFont(FontManager.getRunescapeBoldFont());
-		titleLabel.setForeground(Color.WHITE);
-
-		infoLabel.setFont(FontManager.getRunescapeSmallFont());
-		infoLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-
-		area.add(titleLabel);
-		area.add(Box.createVerticalStrut(6));
-		area.add(infoLabel);
-		return area;
-	}
-
-	private JLabel buildCredits()
-	{
-		JLabel credits = new JLabel("<html><body style='width: 160px'>Info from the "
-			+ "<u>Old School RuneScape Wiki</u> (CC BY-NC-SA 3.0)</body></html>");
-		credits.setFont(FontManager.getRunescapeSmallFont());
-		credits.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-		credits.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-		credits.addMouseListener(new MouseAdapter()
-		{
-			@Override
-			public void mouseClicked(MouseEvent e)
-			{
-				LinkBrowser.browse(WIKI_URL);
-			}
-		});
-		return credits;
 	}
 
 	/**
@@ -255,7 +237,7 @@ class MobStrategyPanel extends PluginPanel
 
 		List<String> startsWith = new ArrayList<>();
 		List<String> contains = new ArrayList<>();
-		for (String monster : MONSTERS)
+		for (String monster : monsters)
 		{
 			String name = monster.toLowerCase();
 			if (name.startsWith(search))
@@ -296,8 +278,196 @@ class MobStrategyPanel extends PluginPanel
 	/** Show a monster and reset the search box. */
 	private void pick(String monster)
 	{
-		monsterDropdown.setSelectedItem(monster); // this also shows its info
+		monsterDropdown.setSelectedItem(monster); // this also opens its guide
 		searchBar.setText(""); // clearing the box hides the results list
+	}
+
+	// ---------------------------------------------------------------- guide area
+
+	private JPanel buildInfoArea()
+	{
+		JPanel area = new JPanel();
+		area.setLayout(new BoxLayout(area, BoxLayout.Y_AXIS));
+		area.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		area.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+
+		titleLabel.setFont(FontManager.getRunescapeBoldFont());
+		titleLabel.setForeground(Color.WHITE);
+		titleLabel.setAlignmentX(LEFT_ALIGNMENT);
+
+		statusLabel.setFont(FontManager.getRunescapeSmallFont());
+		statusLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		statusLabel.setAlignmentX(LEFT_ALIGNMENT);
+
+		wikiLink.setText("<html><u>Open full page on the wiki</u></html>");
+		wikiLink.setFont(FontManager.getRunescapeSmallFont());
+		wikiLink.setForeground(ColorScheme.BRAND_ORANGE);
+		wikiLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		wikiLink.setAlignmentX(LEFT_ALIGNMENT);
+		wikiLink.addMouseListener(new MouseAdapter()
+		{
+			@Override
+			public void mouseClicked(MouseEvent e)
+			{
+				if (currentGuide != null)
+				{
+					LinkBrowser.browse(WikiApi.pageLink(currentGuide.page));
+				}
+			}
+		});
+
+		// Notes tab: the wiki's text about gear and inventory
+		JPanel notesTab = new JPanel();
+		notesTab.setLayout(new BoxLayout(notesTab, BoxLayout.Y_AXIS));
+		notesTab.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		styleText(notesLabel);
+		notesTab.add(notesLabel);
+
+		// Tactics tab: every other section of the page
+		JPanel tacticsTab = new JPanel();
+		tacticsTab.setLayout(new BoxLayout(tacticsTab, BoxLayout.Y_AXIS));
+		tacticsTab.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		styleText(tacticsLabel);
+		tacticsTab.add(tacticsLabel);
+
+		JPanel tabDisplay = new JPanel(new BorderLayout());
+		tabDisplay.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		MaterialTabGroup tabGroup = new MaterialTabGroup(tabDisplay);
+		MaterialTab gear = new MaterialTab("Gear", tabGroup, gearView);
+		MaterialTab notes = new MaterialTab("Notes", tabGroup, notesTab);
+		MaterialTab tactics = new MaterialTab("Tactics", tabGroup, tacticsTab);
+		tabGroup.addTab(gear);
+		tabGroup.addTab(notes);
+		tabGroup.addTab(tactics);
+		tabGroup.select(gear);
+
+		tabArea.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		tabArea.setAlignmentX(LEFT_ALIGNMENT);
+		tabArea.add(tabGroup, BorderLayout.NORTH);
+		tabArea.add(tabDisplay, BorderLayout.CENTER);
+
+		area.add(titleLabel);
+		area.add(Box.createVerticalStrut(4));
+		area.add(statusLabel);
+		area.add(Box.createVerticalStrut(4));
+		area.add(wikiLink);
+		area.add(Box.createVerticalStrut(8));
+		area.add(tabArea);
+		return area;
+	}
+
+	private static void styleText(JLabel label)
+	{
+		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		label.setAlignmentX(LEFT_ALIGNMENT);
+		label.setVerticalAlignment(JLabel.TOP);
+	}
+
+	private void showNothingSelected()
+	{
+		currentGuide = null;
+		currentName = null;
+		titleLabel.setText("Pick a monster");
+		if (monsters.isEmpty())
+		{
+			statusLabel.setText(html("No guide info found. Run GuideGenerator to build guides.json.", GRAY));
+		}
+		else
+		{
+			statusLabel.setText(html(monsters.size() + " monsters and bosses. Search above or use the dropdown.", GRAY));
+		}
+		wikiLink.setVisible(false);
+		tabArea.setVisible(false);
+		refreshLayout();
+	}
+
+	/** Shows a guide right away, then grabs a fresh copy from the wiki if that setting is on. */
+	private void openGuide(String name)
+	{
+		currentName = name;
+		MonsterGuide guide = store.get(name);
+		if (guide == null)
+		{
+			showNothingSelected();
+			return;
+		}
+		showGuide(guide);
+
+		if (!config.liveWikiLookups())
+		{
+			setStatus("Built-in info from " + store.builtInDate() + ".");
+		}
+		else if (store.hasLive(name))
+		{
+			setStatus("Up to date with the wiki.");
+		}
+		else
+		{
+			setStatus("Getting the latest info from the wiki...");
+			store.fetchLive(name,
+				fresh -> SwingUtilities.invokeLater(() ->
+				{
+					if (name.equals(currentName))
+					{
+						showGuide(fresh);
+						setStatus("Up to date with the wiki.");
+					}
+				}),
+				() -> SwingUtilities.invokeLater(() ->
+				{
+					if (name.equals(currentName))
+					{
+						setStatus("Couldn't reach the wiki. Showing built-in info.");
+					}
+				}));
+		}
+	}
+
+	private void showGuide(MonsterGuide guide)
+	{
+		currentGuide = guide;
+		// wrapped, so long names like "Fossil Island wyverns (Slayer task)" can't stretch the panel
+		titleLabel.setText(wrapHtml(escape(guide.name)));
+		wikiLink.setVisible(true);
+		tabArea.setVisible(true);
+
+		// Gear tab
+		gearView.show(guide);
+
+		// Notes tab
+		notesLabel.setText(guide.gearNotes.isEmpty()
+			? html("No gear notes on the wiki for this one.", GRAY)
+			: sectionsHtml(guide.gearNotes));
+
+		// Tactics tab
+		tacticsLabel.setText(guide.tactics.isEmpty()
+			? html("No tactics written on the wiki for this one yet.", GRAY)
+			: sectionsHtml(guide.tactics));
+
+		refreshLayout();
+	}
+
+	private void setStatus(String text)
+	{
+		statusLabel.setText(html(text, GRAY));
+	}
+
+	private JLabel buildCredits()
+	{
+		JLabel credits = new JLabel(wrapHtml("Info from the <u>Old School RuneScape Wiki</u> (CC BY-NC-SA 3.0)"));
+		credits.setFont(FontManager.getRunescapeSmallFont());
+		credits.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		credits.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		credits.addMouseListener(new MouseAdapter()
+		{
+			@Override
+			public void mouseClicked(MouseEvent e)
+			{
+				LinkBrowser.browse(WIKI_URL);
+			}
+		});
+		return credits;
 	}
 
 	private void refreshLayout()
@@ -306,21 +476,54 @@ class MobStrategyPanel extends PluginPanel
 		repaint();
 	}
 
-	private void showNothingSelected()
+	// ---------------------------------------------------------------- text formatting
+
+	/** Turns guide sections into wrapped HTML: orange headings, then the text. */
+	private static String sectionsHtml(List<GuideSection> sections)
 	{
-		titleLabel.setText("Pick a monster");
-		infoLabel.setText(wrap("Search above or choose from the dropdown."));
+		StringBuilder sb = new StringBuilder();
+		for (GuideSection section : sections)
+		{
+			String color = section.level <= 2 ? ORANGE : WHITE;
+			sb.append("<span style='color:").append(color).append("'><b>")
+				.append(escape(section.heading)).append("</b></span><br>");
+			for (String line : section.text.split("\n"))
+			{
+				// leading spaces = indent for sub-bullets
+				int spaces = 0;
+				while (spaces < line.length() && line.charAt(spaces) == ' ')
+				{
+					spaces++;
+				}
+				for (int i = 0; i < spaces; i++)
+				{
+					sb.append("&nbsp;&nbsp;");
+				}
+				sb.append(escape(line.substring(spaces))).append("<br>");
+			}
+			sb.append("<br>");
+		}
+		return wrapHtml(sb.toString());
 	}
 
-	private void showMonster(String monster)
+	private static String html(String text, String color)
 	{
-		titleLabel.setText(monster);
-		infoLabel.setText(wrap("Gear and tactics for " + monster + " will show here once wiki info is hooked up."));
+		return wrapHtml("<span style='color:" + color + "'>" + escape(text) + "</span>");
 	}
 
 	/** Wraps text so it fits the panel width instead of running off the side. */
-	private static String wrap(String text)
+	private static String wrapHtml(String body)
 	{
-		return "<html><body style='width: 150px'>" + text + "</body></html>";
+		return "<html><body style='width: " + TEXT_WIDTH + "px'>" + body + "</body></html>";
+	}
+
+	private static String escape(String s)
+	{
+		return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+	}
+
+	private static String toHex(Color c)
+	{
+		return String.format("#%06x", c.getRGB() & 0xFFFFFF);
 	}
 }

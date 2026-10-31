@@ -1,15 +1,18 @@
 package com.mobstrategy;
 
+import com.google.gson.Gson;
 import com.google.inject.Provides;
 import java.awt.image.BufferedImage;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ImageUtil;
+import okhttp3.OkHttpClient;
 
 @Slf4j
 @PluginDescriptor(
@@ -25,14 +28,25 @@ public class MobStrategyPlugin extends Plugin
 	@Inject
 	private MobStrategyConfig config;
 
+	@Inject
+	private OkHttpClient okHttpClient;
+
+	@Inject
+	private Gson gson;
+
+	@Inject
+	private ItemManager itemManager;
+
 	private MobStrategyPanel panel;
 	private NavigationButton navButton;
 
 	@Override
 	protected void startUp() throws Exception
 	{
-		// Build the side panel and add its button to RuneLite's sidebar
-		panel = new MobStrategyPanel();
+		// Load the built-in guides, then build the side panel
+		GuideStore guideStore = new GuideStore(okHttpClient, gson);
+		guideStore.loadBuiltIn();
+		panel = new MobStrategyPanel(guideStore, config, itemManager);
 
 		final BufferedImage icon = ImageUtil.loadImageResource(getClass(), "icon.png");
 
